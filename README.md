@@ -1,2 +1,2 @@
 # GLDD-Portfolio
-A collection of my work during my tie at Great Lakes Dredge &amp; Dock
+A collection of my work during my time at Great Lakes Dredge &amp; Dock
