@@ -1,6 +1,6 @@
 # Spreadsheets
 
-Here are some spreadsheets to sample my proficiency in Excel. I made these to streamline some processes at Great Lakes Dredge & Dock to cut down to amount of time required to perform these tasks.
+Here are some spreadsheets to sample my proficiency in Excel. I made these to streamline some processes at GLDD to cut down to amount of time required to perform these tasks.
 
 ## Parallel Flow Model
 
