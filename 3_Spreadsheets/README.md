@@ -8,4 +8,6 @@ This spreadsheet streamlines the process of calculating the single-branch pipe s
 
 ## Disposal Area, Culvert, and Weir Box Design
 
-This spreadsheet assists in streamlining the processes of designing disposal areas, culverts, and weir boxes. This task was a little more difficult since the design process for disposal areas and culverts is an iterative process which requires engineering understanding of the relevant concepts. Therefore I was not able to complete this in my time at GLDD to make it completely user friendly and streamlined for those that aren't competent in these design processes.
+This spreadsheet assists in streamlining the processes of designing disposal areas, culverts, and weir boxes.
+
+This task was a little more difficult since the design process for disposal areas and culverts is an iterative process which requires engineering understanding of the relevant concepts. Therefore I was ***not able to complete*** this spreadsheet in my time at GLDD to make it completely user friendly/streamlined for those that aren't competent in these design processes.
