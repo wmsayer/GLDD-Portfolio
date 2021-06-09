@@ -21,7 +21,7 @@ Once CSD Phase is being recognized by the NN, additional networks or ML algorith
 
 #### Cuts
   - Defined by user for now by boundaries and centerline (CL)
-  - Can later be defined with AI by absolute CL equation Y = mX + b and aggregation of digging blocks
+  - Can later be defined with AI by absolute CL equation **Y = mX + b** and *aggregation of digging blocks*
 
 #### Blocks
   - A block is an arbitrary contiguous area of digging. The boundaries of a block are defined by the coordinates of its first swing, last swing, port corners, and stbd corners
@@ -39,7 +39,7 @@ Once CSD Phase is being recognized by the NN, additional networks or ML algorith
   - For example, if you double swing and your step size is calculated as 0.1ft, your swing area will be extremely small, but you are still getting material in your density and velocity readings, so your calculated face for this swing is astronomically high. However if you group the 0.1ft swing with the previous swing that happened to be 6ft, then your face calculation for both will be based on 6.1ft. This is a realistic adjustment to make since your cleanup swing is digging the spillage from the previous standard swing.
 
 #### Cleanup Swings & Standard Swings
-- A cleanup swing is any swing with a step < 1.5 ft (this value was defined by *15857 Townsends Inlet Face Investigation* in "resources" directory, but is up for debate, it may even be equipment-specific)
+- A cleanup swing is any swing with a step < 1.5 ft (this value was defined by *15857 Townsends Inlet Face Investigation* (not included), but is not set in stone, it may even be equipment-specific)
 - A standard swing is any swing >= 1.5ft
 
 #### CSD Phase
