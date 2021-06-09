@@ -1,0 +1,1153 @@
+---
+title: "CSD Automatic Production Estimate from Dredge System Data"
+author: "William Sayer"
+date: '7/27/2020'
+output:
+  html_document: 
+    theme: sandstone
+    toc: yes 
+    number_sections: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+  pdf_document: default
+urlcolor: cyan
+---
+
+***
+
+```{r setup, echo = FALSE, message = FALSE, warning = FALSE}
+options(scipen = 1, digits = 4, width = 80, fig.align = "center")
+```
+
+# Introduction
+
+The purpose of this document is to:
+
+- give insight into the capabilities of [Python](https://www.python.org/) and [R](https://www.r-project.org/about.html) and how they are used for data modeling
+- present what [RMarkdown](https://rmarkdown.rstudio.com/lesson-1.html) has to offer in terms of creating **reproducible reports**
+- prototype two models to estimate CSD production for the Alaska and Illinois based strictly on Dredge System data
+- give basic insight into how models are analyzed during development in order to optimize and test their integrity
+- establish a **data pipeline** such that this modeling procedure and report can be seamlessly repeated with new dredge data, new data features (i.e. blow count, cutter type, D50), different dredges, or a different model formula
+
+## R & Python
+
+R & Python are both *prototyping languages* that allow for faster testing and development of data models than traditional programming languages such as C++ and Java, which makes them the most popular tools of choice for data modeling. They are both free and open source and have libraries devoted  specifically to machine learning such as [Keras](https://keras.io/), [scikit-learn](https://scikit-learn.org/stable/), [CARET](http://topepo.github.io/caret/index.html), and more.
+
+***
+
+# Methods
+
+## Python Processing
+
+The data provided in `CSDFinal.csv` was used to fit the model in this example. This data includes all Alaska and Illinois data from 2012-present. Both `Daily` and `Plant` data were downloaded from Dredge System.
+
+The data in `CSDFinal.csv` is the output of a Python script which joins the `Daily` and `Plant` data files and performs the following:
+
+- determines if a booster was operational by having > 5 RevHrs
+- classifies the number of "operational" boosters per day (Jesse and Buster = 2 bstrs, all others = 1)
+- joins the two datasets into the final `CSDFinal.csv`, hence the `NumBstr` column all the way to the right in the file
+
+## Daily Filter Cleaning
+
+Once `CSDFinal.csv` is built, it gets loaded into this RMarkdown script (the file you're reading is the `.html` output of the RMarkdown script) with only the following fields listed below:
+
+```{r}
+
+req_fields = c("ProjectNumber", "PrimePhaseNumber", "DigQty", "WorkHrs", "Area", "Travel", 
+               "Rock",	"BlastedRock", "WeatheredRock",	"Gravel",	"Shell",	"MudSilt",	
+               "FineSand", "MediumSand",	"CoarseSand",	"SoftClay",	"MediumClay",	"StiffClay",
+               "FloatHoseLength",	"SinkHoseLength", "PontoonPipeLength", "SublineLength",
+               "UnscopedShorePipeLength", "ShorePipeLength",
+               "BottomOfSuction", "NumBstr")
+```
+
+```{r include=FALSE}
+original = read.csv("CSDFinal.csv")
+
+materials = c("Rock",	"BlastedRock",
+               "WeatheredRock",	"Gravel",	"Shell",	"MudSilt",	"FineSand",
+               "MediumSand",	"CoarseSand",	"SoftClay",	"MediumClay",	"StiffClay")
+
+final_fields = c("ProjectNumber", "PrimePhaseNumber", "WorkHrs", "Area", "Rock",	"BlastedRock",
+               "WeatheredRock",	"Gravel",	"Shell",	"MudSilt",	"FineSand",
+               "MediumSand",	"CoarseSand",	"SoftClay",	"MediumClay",	"StiffClay",
+               "BottomOfSuction", "NumBstr")
+```
+
+```{r include=FALSE}
+wh_filt = 8
+covg_filt = 40000
+vol_filt = 100000
+prod_filt = 4300
+bos_filt = 10
+face_filt_hi = 10
+face_filt_lo = 1
+
+pipe_filt_hi = 100000
+pipe_filt_lo = 3000
+cutw_filt = 600
+```
+
+The data is then cleaned to remove all days that fail in any of the following filters:
+
+- WorkHrs > `r wh_filt` hrs
+- Coverage < `r covg_filt` sqft
+- DailyVolume < `r vol_filt` CY
+- Production < `r prod_filt` CY/WH
+- BottomOfSuction > `r bos_filt` ft
+- DigFace > `r face_filt_lo` ft and DigFace < `r face_filt_hi` ft
+- TotalPipeLine > `r pipe_filt_lo` ft and TotalPipeLine < `r pipe_filt_hi` ft
+- CutWidth < `r cutw_filt` ft
+
+
+
+```{r include=FALSE}
+original_red = original[original$WorkHrs > wh_filt,]
+original_red = original_red[original_red$Area/original_red$WorkHrs < covg_filt,]
+original_red = original_red[original_red$DigQty < vol_filt,]
+original_red = original_red[original_red$DigQty/original_red$WorkHrs < prod_filt,]
+original_red = original_red[original_red$BottomOfSuction > bos_filt,]
+original_red = original_red[27*original_red$DigQty/original_red$Area > face_filt_lo,]
+original_red = original_red[27*original_red$DigQty/original_red$Area < face_filt_hi,]
+
+clean_df = subset(original_red, select = final_fields)
+
+clean_df$Face = 27*original_red$DigQty/original_red$Area
+clean_df$NumBstr = as.factor(original_red$NumBstr)
+clean_df$CutWidth = original_red$Area/original_red$Travel
+clean_df$TotalPipeline = original_red$FloatHoseLength + original_red$SinkHoseLength + 
+                         original_red$PontoonPipeLength + original_red$SublineLength +
+                         original_red$UnscopedShorePipeLength + original_red$ShorePipeLength
+
+clean_df = clean_df[clean_df$TotalPipeline < pipe_filt_hi,]
+clean_df = clean_df[clean_df$TotalPipeline > pipe_filt_lo,]
+clean_df = clean_df[clean_df$CutWidth < cutw_filt,]
+```
+
+Before applying these filters we had **`r nrow(original)` days** of data between the two dredges. After applying the filters we are now left with **`r nrow(clean_df)` days**.
+
+## Material Distribution
+
+Next I look at material type distribution to determine if it is appropriate to include all material types. The barplot below shows the number of days where a material type is recorded as > 0%
+
+```{r echo=FALSE, fig.height = 6}
+library(knitr)
+mat_count = data.frame("Rock" = -1,	"BlastedRock" = -1, "WeatheredRock" = -1,	
+                       "Gravel" = -1,	"Shell" = -1,	"MudSilt" = -1,	"FineSand" = -1,
+                       "MediumSand" = -1,	"CoarseSand" = -1,	"SoftClay" = -1,	
+                       "MediumClay" = -1,	"StiffClay" = -1)
+
+matc = rep(-1, ncol(mat_count))
+mat_i = 1
+for(mat in names(mat_count)){
+  mat_count[mat] = sum(clean_df[, mat] > 0)
+  matc[mat_i] = sum(clean_df[, mat] > 0)
+  mat_i = mat_i + 1
+}
+
+#kable(mat_count)
+par(mar=c(8, 4.1, 4.1, 2.1))
+res = as.matrix(clean_df[, names(mat_count)] > 0)
+barplot(res, col="green", main= "Number of Days Material is Present",
+            ylab = "# Days Reported > 0%", las=2)
+```
+
+
+Judging from the barplot and knowing that the Alaska and Illinois are typically not utilized for rock or stiff clay, I will remove these fields from the dataset to prevent overfitting.
+
+
+```{r}
+clean_df = subset(clean_df, select = -c(Rock, BlastedRock, WeatheredRock, StiffClay))
+```
+
+## Test/Train Split
+
+Next I randomly split the cleaned dataset into a training set (60%) and a test set (40%).
+
+```{r}
+# shuffle dataset
+set.seed(19930413)
+
+train_split = 0.6
+train_size = round(nrow(clean_df) * train_split, 0)
+
+train_idx = sample(1:nrow(clean_df), train_size)
+test_idx = setdiff(seq(1, nrow(clean_df)), train_idx)
+
+train_set = clean_df[train_idx, ]
+test_set = clean_df[test_idx, ]
+```
+
+
+The training set has `r nrow(train_set)` dredge days and the test set has `r nrow(test_set)` days. The training set will be used to fit the model, and the test set will be used to test performance and overfitting.
+
+***
+
+# Simple Model
+
+## Description
+
+The first model I'll try will be the simplest model that includes all predictors. I fit a **multiple linear regression** to the following equation:
+
+\[
+Coverage = \beta_0 + \beta_1*Face + \beta_2*Gravel + ... + \beta_9*MedClay + \beta_{10}*NumBstr +
+\]
+
+\[
+   \beta_{11}*BottomOfSuction + \beta_{12}*CutWidth + \beta_{13}*TotalPipeline
+\]
+
+Where the $\beta$ parameters are fit by minimizing residual error. Once the parameters are fit, this formula can be used to estimate coverage/production using R, Python, Excel, or even hand calculated on paper (but would not recommend it!).
+
+```{r include=FALSE}
+bad_model = lm(Area ~ . - ProjectNumber - PrimePhaseNumber, data = train_set)
+
+cd_lim_bad = 6/length(cooks.distance(bad_model))
+num_out_bad = sum(cooks.distance(bad_model) > cd_lim_bad)
+```
+
+## Diagnostics {.tabset}
+
+### Residuals vs Fitted
+
+This plot tests for the **linearity** and **equal variance** assumptions that are inherently made in a linear regression. A good fit shows:
+
+- equally distributed residuals across all fitted values
+- a mean of 0 across all fitted values
+
+Essentially, we want the spread to be even, horizontal, and centered around zero. The horn shape in the graph below displays unequal, non-linear residuals. The linearity and equal variance assumptions are definitely suspect here.
+
+```{r echo=FALSE}
+plot(bad_model, which = c(1))
+```
+
+### Normal Q-Q
+
+This plot tests for the **normality** assumption that is inherently made in a linear regression (error is normally distributed about the regression). A good fit should be linear following the dotted line. Here the center doesn't look bad, but it seems normality is lost on the tails as they vear off, so we may want to try for a better option.
+
+```{r echo=FALSE}
+plot(bad_model, which = c(2))
+```
+
+### Cook's Distance
+
+Cook's Distance is a quick way to check for outliers. The heuristic used to determine outliers is dependent on sample size. For this sample, any data point with a Cook's Distance > `r cd_lim_bad` is suspect of being an outlier, so `r num_out_bad` of our `r length(cooks.distance(bad_model))` observations are suspect of being outliers.
+
+```{r echo=FALSE}
+plot(bad_model, which = c(4))
+```
+
+```{r, echo=FALSE, results='asis'}
+# 
+# cat("## Bad Model Results {.tabset}\n\n")
+# 
+# plot_names = c("Residuals vs Fitted", "Normal Q-Q", "", "Cook's Distance")
+# 
+# d1 = "This plot tests for the **linearity** and **equal variance** assumptions that are inherently made in a linear regression. A good fit shows:\n\n- equally distributed residuals across all fitted values\n- a mean of 0 across all fitted values\n\nEssentially, we want the spread to be even, horizontal, and centered around zero. The horn shape in the graph below displays unequal, non-linear residuals. The linearity and equal variance assumptions are definitely suspect here."
+# 
+# d2 = "This plot tests for the **normality** assumption that is inherently made in a linear regression (error is normally distributed about the regression). A good fit should be linear following the dotted line. This fit is not terrible but the tail at the low end could be improved. Overall I'd say the normality assumption is upheld."
+# 
+# d4 = "Cook's Distance is a quick way to check for outliers. The heuristic used to determine outliers is dependent on sample size. For this sample, any data point with a Cook's Distance > 0.0028 is suspect of being an outlier, so 62 of our 1"
+# 
+# desc = c(d1, d2, "", "")
+# 
+# for (f in c(1, 2, 4)){
+#   
+#   cat("### ", plot_names[f], '<br>', '\n\n')
+#   cat("", desc[f], '<br>', '\n\n')
+#   #par(mfrow=c(1, 2))
+#   plot(bad_model, which = c(f))
+#   
+#   cat('\n', '<br>', '\n\n')
+#   
+# }
+```
+
+
+***
+
+# Log Model
+
+## Description
+
+After series of trials using the graphs detailed above along with some other statistical testing tools, I fit a more complicated **multiple linear regression** that utilizes a log transformation on the response as well as some other transformations and interactions. This model upholds the assumptions made in a linear regression a little bit better. The formula for the log model is:
+
+\[
+ln(Coverage) = \beta_0 + \beta_1*CutWidth + \beta_2*ln(CutWidth) +
+\]
+
+\[
+   \beta_3*Gravel + ... + \beta_{10}*MedClay +
+\]
+
+
+\[
+   \beta_{11}*NumBstr*ln(TotalPipeline) +
+\]
+
+\[
+   \beta_{12}*BottomOfSuction + \beta_{13}*Face*ln(BottomOfSuction^2) +
+\]
+
+\[
+   \beta_{14}*Face + \beta_{15}*Face^{2}
+\]
+
+Where the $\beta$ parameters are fit by minimizing residual error.
+
+```{r include=FALSE}
+model_form_2 = as.formula("
+                           log(Area) ~ WorkHrs:CutWidth + WorkHrs:I(log(CutWidth)) + 
+                               WorkHrs:Face:I(log(BottomOfSuction^2)) + WorkHrs:BottomOfSuction +
+                               WorkHrs:Face + WorkHrs:I(Face^2) +
+                               WorkHrs:I(log(TotalPipeline)):NumBstr +
+                               WorkHrs:Gravel	+ 
+                               WorkHrs:Shell	+ 
+                               WorkHrs:MudSilt	+ 
+                               WorkHrs:FineSand	+ 
+                               WorkHrs:MediumSand	+ 
+                               WorkHrs:CoarseSand	+ 
+                               WorkHrs:SoftClay	+ 
+                               WorkHrs:MediumClay
+                         ")
+
+model_2 = lm(model_form_2, data = train_set)
+#plot(model_2)
+summary(model_2)
+
+inlf3 = cooks.distance(model_2) > 6/length(cooks.distance(model_2))
+train_set[inlf3, ]
+
+cd_lim_opt = 6/length(cooks.distance(model_2))
+num_out_opt = sum(cooks.distance(model_2) > cd_lim_opt)
+
+```
+
+
+## Diagnostics {.tabset}
+
+### Residuals vs Fitted
+
+The results aren't perfect, but the **linearity** and **equal variance** assumptions have significantly improved.
+
+```{r echo=FALSE}
+plot(model_2, which = c(1))
+```
+
+### Normal Q-Q
+
+The upper tail on this plot has significantly improved, making the **normality** assumption less suspect. The lower tail is still off, but overall this is great improvement.
+
+```{r echo=FALSE}
+plot(model_2, which = c(2))
+```
+
+### Cook's Distance
+
+For this sample, any data point with a Cook's Distance > `r cd_lim_opt` is suspect of being an outlier, so `r num_out_opt` of our `r length(cooks.distance(model_2))` observations are suspect of being outliers.
+
+```{r echo=FALSE}
+plot(model_2, which = c(4))
+```
+
+
+
+```{r include=FALSE}
+library(dplyr)
+
+get_avgs = function(daily_set){
+  proj_sub = distinct(daily_set, ProjectNumber, PrimePhaseNumber)
+  
+  result_df = daily_set[1:nrow(proj_sub), ]
+  result_df[,] = 0
+  #print(result_df)
+  for(i in seq(1, nrow(proj_sub))){
+    proj = proj_sub[i, 1]
+    subj = proj_sub[i, 2]
+    
+    mask = daily_set$ProjectNumber == proj & daily_set$PrimePhaseNumber == subj
+    temp = daily_set[mask,]
+    
+    result_df$ProjectNumber[i] = proj
+    result_df$PrimePhaseNumber[i] = subj
+    result_df$WorkHrs[i] = mean(temp$WorkHrs)
+    result_df$Area[i] = mean(temp$Area)
+    
+    #covg = sum(temp$Area)/sum(temp$WorkHrs)
+    
+    daily_vol = temp$Area*temp$Face
+    vol = sum(daily_vol)
+    face = vol/sum(temp$Area)
+    
+    result_df$Gravel[i] = sum(daily_vol*temp$Gravel)/vol
+    result_df$Shell[i] = sum(daily_vol*temp$Shell)/vol
+    result_df$MudSilt[i] = sum(daily_vol*temp$MudSilt)/vol
+    result_df$FineSand[i] = sum(daily_vol*temp$FineSand)/vol
+    result_df$MediumSand[i] = sum(daily_vol*temp$MediumSand)/vol
+    result_df$CoarseSand[i] = sum(daily_vol*temp$CoarseSand)/vol
+    result_df$SoftClay[i] = sum(daily_vol*temp$SoftClay)/vol
+    result_df$MediumClay[i] = sum(daily_vol*temp$MediumClay)/vol
+    result_df$BottomOfSuction[i] = sum(temp$Area*temp$BottomOfSuction)/sum(temp$Area)
+    result_df$NumBstr[i] = round(mean(as.integer(temp$NumBstr))) - 1
+    result_df$Face[i] = face
+    
+    trav = sum(temp$Area/temp$CutWidth)
+    result_df$CutWidth[i] = sum(temp$Area)/trav
+    result_df$TotalPipeline[i] = sum(daily_vol*temp$TotalPipeline)/vol
+  }
+  
+  result_df$NumBstr = as.factor(result_df$NumBstr)
+  return(result_df)
+}
+#get_avgs(test_set)
+```
+
+
+***
+
+# RMSE Comparison
+
+A common way to test the performance of a model, compare it to others, and test for overfitting is by calculating the **root mean square error (RMSE)** for both the train and test sets. A test RMSE that is significantly larger than the train RMSE suggests the model was overfit to the training set.
+
+The table below displays the test and train RMSE values for the daily entries (60/40 split), and then I have also calculated an RMSE on the **subjob averages** since there is less fluctuation in the averages, and they are our target during estimating.
+
+However it is important to note the **SJ averages were calculated on the full dataset** so they indirectly contain train data. In the future I will select test and train data based on random selection of subjobs in order to fully separate the test and train data for SJ average anaysis.
+
+Due to the way the model was fit, the **RMSE values are calculated in terms of Area (sqft)**.
+
+
+```{r echo=FALSE}
+library("knitr")
+trainRMSE_set = train_set
+testRMSE_set = test_set
+testRMSE_set_SJavg = get_avgs(clean_df)
+
+tr_RMSE_simp = sqrt(mean((trainRMSE_set$Area - predict(bad_model, newdata = trainRMSE_set))^2))
+tr_RMSE_2 = sqrt(mean((trainRMSE_set$Area - exp(predict(model_2, newdata = trainRMSE_set)))^2))
+#tr_RMSE_3 = sqrt(mean((trainRMSE_set$Area - exp(predict(model_3, newdata = trainRMSE_set)))^2))
+
+te_RMSE_simp = sqrt(mean((testRMSE_set$Area - predict(bad_model, newdata = testRMSE_set))^2))
+te_RMSE_2 = sqrt(mean((testRMSE_set$Area - exp(predict(model_2, newdata = testRMSE_set)))^2))
+#te_RMSE_3 = sqrt(mean((testRMSE_set$Area - exp(predict(model_3, newdata = testRMSE_set)))^2))
+
+te_RMSE_simp_sj_avg = sqrt(mean((testRMSE_set_SJavg$Area - predict(bad_model, newdata = testRMSE_set_SJavg))^2))
+te_RMSE_2_sj_avg = sqrt(mean((testRMSE_set_SJavg$Area - exp(predict(model_2, newdata = testRMSE_set_SJavg)))^2))
+#te_RMSE_3_sj_avg = sqrt(mean((testRMSE_set_SJavg$Area - exp(predict(model_3, newdata = testRMSE_set_SJavg)))^2))
+
+# RMSE_df = data.frame(Train_RMSE = c(tr_RMSE_simp, tr_RMSE_2, tr_RMSE_3),
+#                      Test_RMSE = c(te_RMSE_simp, te_RMSE_2, te_RMSE_3),
+#                      Test_RMSE_SJ_avg = c(te_RMSE_simp_sj_avg, te_RMSE_2_sj_avg, te_RMSE_3_sj_avg),
+#                      percent = c(te_RMSE_2/mean(testRMSE_set$Area), 
+#                                  te_RMSE_3/mean(testRMSE_set$Area)),
+#                      row.names = c("Simple Model", "Opt Model", "Opt Minus Outliers"))
+
+RMSE_df = data.frame(Train_RMSE_Daily = c(tr_RMSE_simp, tr_RMSE_2),
+                     Test_RMSE_Daily = c(te_RMSE_simp, te_RMSE_2),
+                     SJ_Avg_RMSE = c(te_RMSE_simp_sj_avg, te_RMSE_2_sj_avg),
+                     row.names = c("Simple Model", "Log Model"))
+names(RMSE_df) = c("Train RMSE Daily (sqft)", "Test RMSE Daily (sqft)", "SJ Avg RMSE (sqft)")
+kable(RMSE_df)
+```
+
+
+Looking at the daily test RMSE, it seems the **Log Model** is slightly better, but the two are relatively equivalent.
+
+***
+
+# Simple Model Performance
+
+## Daily Basis {.tabset}
+
+```{r include=FALSE}
+#pred_area = exp(predict(model_2, newdata = testRMSE_set))
+pred_area = predict(bad_model, newdata = testRMSE_set)
+
+face = testRMSE_set$Face
+
+pred_prod = pred_area*face/testRMSE_set$WorkHrs/27
+act_prod = testRMSE_set$Area*face/testRMSE_set$WorkHrs/27
+
+pred_covg = pred_area/testRMSE_set$WorkHrs
+act_covg = testRMSE_set$Area/testRMSE_set$WorkHrs
+```
+
+### Production vs Face
+
+Not bad, but some of the higher production is missed on the lower face and some of the fitted values above 7 ft are very low with a few negative production estimates.
+
+```{r include=FALSE}
+face_max = 10
+face_min = 1
+covg_max = 40000
+covg_min = -2000
+prod_max = 5500
+prod_min = -800
+```
+
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o",
+     main = "Production vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(prod_min, prod_max))
+points(face, act_prod, col="blue", pch="*")
+
+# plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+#      main = "Production vs Face (Daily)")
+# points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Simple Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red",
+     main = "Coverage vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(covg_min, covg_max))
+points(face, act_covg, col="blue", pch="*")
+
+# plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+#      main = "Coverage vs Face (Daily)")
+# points(face, act_covg, col="blue", pch="*")
+
+legend(7.4, covg_max, legend=c("Simple Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 6.1.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-200, 200, 10))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 6.1.3 and 6.1.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time the actual production is within **`r mean(c(abs(quantiles[1, "75%"]), abs(quantiles[1, "25%"])))`%** of the model estimation
+- 80% of the time the actual production is within **`r mean(c(abs(quantiles[1, "90%"]), abs(quantiles[1, "10%"])))`%** of the model estimation
+
+The even distribution on this model and centered median indicate this is an unbiased estimator of production.
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+***
+
+## Subjob Average Basis {.tabset}
+
+```{r include=FALSE}
+#pred_area = exp(predict(model_2, newdata = testRMSE_set))
+pred_area = predict(bad_model, newdata = testRMSE_set_SJavg)
+
+face = testRMSE_set_SJavg$Face
+
+pred_prod = pred_area*face/testRMSE_set_SJavg$WorkHrs/27
+act_prod = testRMSE_set_SJavg$Area*face/testRMSE_set_SJavg$WorkHrs/27
+
+pred_covg = pred_area/testRMSE_set_SJavg$WorkHrs
+act_covg = testRMSE_set_SJavg$Area/testRMSE_set_SJavg$WorkHrs
+```
+
+### Production vs Face
+
+The results on sub job averages show significantly better results.
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+     main = "Production vs Face (SJ AVg)", xlim=c(face_min, face_max), ylim=c(prod_min, prod_max))
+points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Simple Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+     main = "Coverage vs Face (SJ Avg)", xlim=c(face_min, face_max), ylim=c(covg_min, covg_max))
+points(face, act_covg, col="blue", pch="*")
+legend(7.4, covg_max, legend=c("Simple Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (SJ Avg)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 6.2.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-100, 100, 5))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 6.2.3 and 6.2.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time the actual production is within **`r mean(c(abs(quantiles[1, "75%"]), abs(quantiles[1, "25%"])))`%** of the model estimation
+- 80% of the time the actual production is within **`r mean(c(abs(quantiles[1, "90%"]), abs(quantiles[1, "10%"])))`%** of the model estimation
+
+The even distribution on this model and centered median indicate this is an unbiased estimator of production.
+
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+***
+
+# Log Model Performance
+
+## Daily Basis {.tabset}
+
+```{r include=FALSE}
+pred_area = exp(predict(model_2, newdata = testRMSE_set))
+#pred_area = predict(bad_model, newdata = testRMSE_set)
+
+face = testRMSE_set$Face
+
+pred_prod = pred_area*face/testRMSE_set$WorkHrs/27
+act_prod = testRMSE_set$Area*face/testRMSE_set$WorkHrs/27
+
+pred_covg = pred_area/testRMSE_set$WorkHrs
+act_covg = testRMSE_set$Area/testRMSE_set$WorkHrs
+```
+
+### Production vs Face
+
+Looking at this chart compared to the Simple Model it seems the Log Model performs much better on the boundary conditions of face.
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+     main = "Production vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(prod_min, prod_max))
+points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+     main = "Coverage vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(covg_min, covg_max))
+points(face, act_covg, col="blue", pch="*")
+legend(7.4, covg_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 7.1.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-200, 200, 10))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 7.1.3 and 7.1.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "25%"])`% aggressive** and **`r abs(quantiles[1, "75%"])`% conservative**
+- 80% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "10%"])`% aggressive** and **`r abs(quantiles[1, "90%"])`% conservative**
+- the median performance of the model is **`r abs(quantiles[1, "50%"])`%** conservative
+
+The skew on this model and non-zero median indicate this is a biased estimator on the conservative side.
+
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+***
+
+## Subjob Average Basis {.tabset}
+
+```{r include=FALSE}
+pred_area = exp(predict(model_2, newdata = testRMSE_set_SJavg))
+#pred_area = predict(bad_model, newdata = testRMSE_set_SJavg)
+
+face = testRMSE_set_SJavg$Face
+
+pred_prod = pred_area*face/testRMSE_set_SJavg$WorkHrs/27
+act_prod = testRMSE_set_SJavg$Area*face/testRMSE_set_SJavg$WorkHrs/27
+
+pred_covg = pred_area/testRMSE_set_SJavg$WorkHrs
+act_covg = testRMSE_set_SJavg$Area/testRMSE_set_SJavg$WorkHrs
+```
+
+### Production vs Face
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+     main = "Production vs Face (SJ AVg)", xlim=c(face_min, face_max), ylim=c(prod_min, prod_max))
+points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+     main = "Coverage vs Face (SJ Avg)", xlim=c(face_min, face_max), ylim=c(covg_min, covg_max))
+points(face, act_covg, col="blue", pch="*")
+legend(7.4, covg_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (SJ Avg)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Gravel
+
+
+```{r echo=FALSE}
+curr_mat = "Gravel"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Shell
+
+
+```{r echo=FALSE}
+curr_mat = "Shell"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Mud/Silt
+
+
+```{r echo=FALSE}
+curr_mat = "MudSilt"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Fine Sand
+
+
+```{r echo=FALSE}
+curr_mat = "FineSand"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Medium Sand
+
+
+```{r echo=FALSE}
+curr_mat = "MediumSand"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Production Residual % vs Coarse Sand
+
+
+```{r echo=FALSE}
+curr_mat = "CoarseSand"
+
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+mat_plot = testRMSE_set_SJavg[, curr_mat][abs(perc_prod_res) < 200]
+
+plot(mat_plot, perc_prod_res2, xlab = curr_mat, ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 7.2.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-110, 110, 5))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 7.2.3 and 7.2.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "25%"])`% aggressive** and **`r abs(quantiles[1, "75%"])`% conservative**
+- 80% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "10%"])`% aggressive** and **`r abs(quantiles[1, "90%"])`% conservative**
+- the median performance of the model is **`r abs(quantiles[1, "50%"])`%** conservative
+
+The skew on this model and non-zero median indicate this is a biased estimator on the conservative side.
+
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+
+***
+
+# Conclusion
+
+To summarize the findings from what has been presented:
+
+- the Log Model upholds the assumptions made in a linear regression much better than the Simple Model
+- RMSE performance between the two models is pretty similar and neither model seems to be overfit
+- the Simple Model seems to have worse performance of estimating production at the high and low bounds of face
+- the Simple Model seems to be an unbiased estimator of production while the Log Model is slightly biased on the conservative side
+- the general trend of **Production Residual % vs Face** for both models is it seems the **variance** in Production Residual % decreases as Face increases
+
+Overall I'd say the **Log Model** is the better choice between the two. It seems to be more robust, and from an estimating perspective, lower risk as it tends to estimate on the conservative end (50% of the time, the estimated production is within the bounds of being 5.7249% aggressive and 15.3807% conservative for SJ avg).
+
+The purpose of this exercise was give a quick presentation on what we can get in terms of producing an automated production estimate strictly from Dredge System data. It is possible there is a better formula to use on this data, but including new data features and/or project relationships can also make a significant difference.
+
+Another purpose of this excercise was to establish a data pipeline for this procedure (and this report) such that it can be streamlined quite seamlessly; however even once established, the pipeline still needs its own sort of maintenance and can always be further improved to operate more efficiently.
+
+***
+
+
+
+
+# Specific Project Reference Plots
+
+
+```{r}
+proj_list = c(72663, 72561)
+project_set_daily = clean_df[clean_df$ProjectNumber %in% proj_list, ]
+project_set_sj_avg = get_avgs(project_set_daily)
+```
+
+
+## Daily Basis {.tabset}
+
+```{r include=FALSE}
+pred_area = exp(predict(model_2, newdata = project_set_daily))
+#pred_area = predict(bad_model, newdata = project_set_daily)
+
+face = project_set_daily$Face
+
+pred_prod = pred_area*face/project_set_daily$WorkHrs/27
+act_prod = project_set_daily$Area*face/project_set_daily$WorkHrs/27
+
+pred_covg = pred_area/project_set_daily$WorkHrs
+act_covg = project_set_daily$Area/project_set_daily$WorkHrs
+```
+
+### Production vs Face
+
+Looking at this chart compared to the Simple Model it seems the Log Model performs much better on the boundary conditions of face.
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+     main = "Production vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(prod_min, prod_max))
+points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Log Model", "Project Data"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+     main = "Coverage vs Face (Daily)", xlim=c(face_min, face_max), ylim=c(covg_min, covg_max))
+points(face, act_covg, col="blue", pch="*")
+legend(7.4, covg_max, legend=c("Log Model", "Project Data"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (Daily)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 7.1.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-200, 200, 10))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 7.1.3 and 7.1.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "25%"])`% aggressive** and **`r abs(quantiles[1, "75%"])`% conservative**
+- 80% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "10%"])`% aggressive** and **`r abs(quantiles[1, "90%"])`% conservative**
+- the median performance of the model is **`r abs(quantiles[1, "50%"])`%** conservative
+
+The skew on this model and non-zero median indicate this is a biased estimator on the conservative side.
+
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+***
+
+## Subjob Average Basis {.tabset}
+
+```{r include=FALSE}
+pred_area = exp(predict(model_2, newdata = project_set_sj_avg))
+#pred_area = predict(bad_model, newdata = project_set_sj_avg)
+
+face = project_set_sj_avg$Face
+
+pred_prod = pred_area*face/project_set_sj_avg$WorkHrs/27
+act_prod = project_set_sj_avg$Area*face/project_set_sj_avg$WorkHrs/27
+
+pred_covg = pred_area/project_set_sj_avg$WorkHrs
+act_covg = project_set_sj_avg$Area/project_set_sj_avg$WorkHrs
+```
+
+### Production vs Face
+
+```{r echo=FALSE}
+plot(face, pred_prod, xlab = "Face (ft)", ylab = "Production (cy/wh)", col = "red", pch="o", 
+     main = "Production vs Face (SJ AVg)", xlim=c(4, 10), ylim=c(0, 4000))
+points(face, act_prod, col="blue", pch="*")
+legend(face_min, prod_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Coverage vs Face
+
+```{r echo=FALSE}
+plot(face, pred_covg, xlab = "Face (ft)", ylab = "Coverage (sqft/wh)", col = "red", 
+     main = "Coverage vs Face (SJ Avg)", xlim=c(4, 10), ylim=c(0, 30000))
+points(face, act_covg, col="blue", pch="*")
+legend(7.4, covg_max, legend=c("Log Model", "Test Data (actual)"),
+       col=c("red", "blue"), pch = c("o", "*"))
+```
+
+### Production Residual % vs Face
+
+This plot displays the residual of the production estimate as a percentage of the fitted value. Think of it as our production performance compared to the estimate.
+
+```{r echo=FALSE}
+perc_prod_res = 100*(act_prod - pred_prod)/pred_prod
+perc_prod_res2 = perc_prod_res[abs(perc_prod_res) < 200]
+face_plot = face[abs(perc_prod_res) < 200]
+
+plot(face_plot, perc_prod_res2, xlab = "Face (ft)", ylab = "Production Residual (%)", col = "red", 
+     main = "Production Residual % vs Face (SJ Avg)")
+
+#data.frame(pred_covg, pred_prod, face)
+#testRMSE_set
+
+```
+
+### Histogram of Production Residual %
+
+A histogram of the same data from Figure 7.2.3.
+
+```{r echo=FALSE}
+#perc_prod_res3 = perc_prod_res[abs(perc_prod_res) < 110]
+hist(perc_prod_res2, probability = TRUE, col = "green", main = "Histogram of Production Residual Percentages", xlab = "Production Residual %", breaks = seq(-110, 110, 5))
+```
+
+### Quantiles
+
+```{r echo=FALSE}
+#boxplot(perc_prod_res)
+quantiles = data.frame(ten = quantile(perc_prod_res, 0.10),
+                      twf = quantile(perc_prod_res, 0.25),
+                      fifty = quantile(perc_prod_res, 0.50),
+                      sevfive = quantile(perc_prod_res, 0.75),
+                      ninety = quantile(perc_prod_res, 0.90), row.names = c("Production Residual %"))
+names(quantiles) = c("10%", "25%", "50%", "75%", "90%")
+```
+
+These quantiles represent the same data from Figures 7.2.3 and 7.2.4. These numerically describe the error distribution. Effectively what this says is:
+
+- 50% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "25%"])`% aggressive** and **`r abs(quantiles[1, "75%"])`% conservative**
+- 80% of the time, the estimated production is within the bounds of being **`r abs(quantiles[1, "10%"])`% aggressive** and **`r abs(quantiles[1, "90%"])`% conservative**
+- the median performance of the model is **`r abs(quantiles[1, "50%"])`%** conservative
+
+The skew on this model and non-zero median indicate this is a biased estimator on the conservative side.
+
+
+```{r echo=FALSE}
+kable(quantiles, align = "ccccc")
+```
+
+
