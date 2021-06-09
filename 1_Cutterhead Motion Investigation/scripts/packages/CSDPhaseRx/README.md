@@ -1,20 +1,15 @@
-# CSDPhaseRecognition
+# CSDPhaseRx
 ## Introduction
-The goal of this project is to develop a neural network to itemize raw CSD data into CSD phases, series, blocks, and cuts as described below.
+The goal of this project is to develop a data pipeline to classify raw CSD data and itemize into ***CSD phases, series, blocks, and cuts*** as described below.
+
+The initial pipeline will use more "manual" classification methods. Once a pipeline is established that proves to be relatively accurate/reliable, the results can then be used as a training set for more advanced methods such as K-Means and neural networks.
 
 ## Current State of Work
-The current workflow is load .mdb into "mainPlotHistStats.py" and run. It will loop through all loaded files and process them through "RecognizePhase.py", plots a histogram of the step distribution and calculates step statistics in "AggregateStats.py", and then exports a .csv of the .mdb data with assigned CSD phases into the output directory. 
+The current workflow is call `run_csd_process()` in `mainStream.py` with a Python dictionary/JSON following the formart seen in `Project/CutterheadMotion/run_instance.py`. There are various options that can be used to refine exactly what and how you want your data to be processed.
 
-"RecognizePhase.py" asssigns CSDPhase to .mdb data with assistance from DelayTracker time entires. Currently the DelayTracker time entries are manual inputs, but on the TODO is to have them read from the DelayTracker database. Top/Bottom pass classification is a manual entry at the time, but can be determined automatically in the future through "blocks" as described below.
+In the future, the details regarding format and options for the input JSON file will be outlined in this here documentation.
 
-"mainBuildTrainingSet.py" is still in the works, but it manufactures a training set for the neural network by selecting and pre-processing input features and then assigning them a CSDPhase decision determined from running "RecognizePhase.py"
-
-## Project Goal
-The first milestone is to create a Bi-Directional LSTM that will determine CSD Phase based on feature inputs. The networks will be dredge-specific. Training set size will need to be determined through iterative trials and 80/20 cross-verification. Feature selection and pre-processing will also be an iterative process, but will be consistent across all CSD dredges.
-
-Once CSD Phase is being recognized by the NN, additional networks or ML algorithms can be used to classify the remaining items.
-
-## Classification Items and Relationships
+## Definitions of Classification Items and Relationships
 
 #### Borrow Area
   - Defined by user (borrow area name, coordinates, grade, etc.)
