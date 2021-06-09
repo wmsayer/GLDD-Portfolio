@@ -1,8 +1,8 @@
 # CSDModelR
 
-This model was a **Multiple Linear Regression** model I put together in a couple of days.
+To view the full CSDModelR HMTL report [click here](https://wmsayer.github.io/CSDModelR.html).
 
-The purpose of this was to sample the a few things:
+This model is a **Multiple Linear Regression** I put together in a couple of days to sample the a few things:
 
 1.	an alternative estimating method that leveraged our existing dataset and could be executed in a fraction of the time of our existing estimating methods
 1.	the power of Python & R vs Excel
