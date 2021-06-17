@@ -953,7 +953,7 @@ To summarize the findings from what has been presented:
 - the Simple Model seems to be an unbiased estimator of production while the Log Model is slightly biased on the conservative side
 - the general trend of **Production Residual % vs Face** for both models is it seems the **variance** in Production Residual % decreases as Face increases
 
-Overall I'd say the **Log Model** is the better choice between the two. It seems to be more robust, and from an estimating perspective, lower risk as it tends to estimate on the conservative end (50% of the time, the estimated production is within the bounds of being 5.7249% aggressive and 15.3807% conservative for SJ avg).
+Overall I'd say the **Log Model** is the better choice between the two. It seems to be more robust, and from an estimating perspective, lower risk as it tends to estimate on the conservative end (**50% of the time**, the estimated production is within the bounds of being **5.7249% aggressive** and **15.3807% conservative** for SJ avg).
 
 The purpose of this exercise was give a quick presentation on what we can get in terms of producing an automated production estimate strictly from Dredge System data. It is possible there is a better formula to use on this data, but including new data features and/or project relationships can also make a significant difference.
 
